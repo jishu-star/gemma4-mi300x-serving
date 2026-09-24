@@ -136,6 +136,28 @@ Apache-2.0. The files in `kernels/` are modified from the
 [vLLM project](https://github.com/vllm-project/vllm) (Apache-2.0) and retain their SPDX headers;
 see [NOTICE](NOTICE).
 
+## Querying it from another machine
+
+`bench/query.sh` is the client — the only script here meant to run off-box. It needs just `curl` and
+`python3`: no vLLM, no GPU, no model download.
+
+```bash
+./bench/query.sh "What is 17 times 23?"                 # localhost, or through an SSH tunnel
+HOST=10.0.0.5 ./bench/query.sh "Hello"                  # server bound 0.0.0.0
+HOST=10.0.0.5 API_KEY=abc ./bench/query.sh "Hello"      # server started with API_KEY
+./bench/query.sh -s "Write a haiku about GPUs"          # stream tokens as they arrive
+```
+
+It is an OpenAI-compatible endpoint, so any OpenAI client works the same way:
+
+```python
+from openai import OpenAI
+c = OpenAI(base_url="http://<host>:8000/v1", api_key="<API_KEY or 'none'>")
+print(c.chat.completions.create(
+    model="google/gemma-4-26B-A4B-it",
+    messages=[{"role": "user", "content": "Hello"}]).choices[0].message.content)
+```
+
 ## Accessing the server from another machine
 
 By default the server binds `127.0.0.1` — local only. There is **no authentication** in vLLM unless
