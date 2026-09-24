@@ -6,12 +6,21 @@ a pinned vLLM image. No vLLM rebuild required — every override is a Python fil
 JIT-compiles at runtime.
 
 ```bash
-git clone <this repo> && cd gemma4-mi300x-serving
-./serve.sh            # starts the server, waits for /health
+git clone https://github.com/jishu-star/gemma4-mi300x-serving
+cd gemma4-mi300x-serving
+
+./serve.sh check      # preflight: docker, GPU, disk, weights, port — run this first
+./serve.sh            # start; waits until /health answers
 ./bench/smoke.sh      # one completion — expects "391"
-./bench/run_bench.sh  # reproduce the matrix
+./bench/run_bench.sh  # reproduce the results matrix
+./serve.sh status     # what is it serving
+./serve.sh logs       # follow the server log
 ./serve.sh stop
 ```
+
+`./serve.sh check` tells you what is missing before anything is downloaded or launched, including
+the exact `hf download` commands for the weights. It also detects whether your docker daemon needs
+`sudo` and uses it rather than failing.
 
 ## Requirements
 

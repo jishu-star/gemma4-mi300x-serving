@@ -21,7 +21,7 @@ HOST=${HOST:-127.0.0.1}
 API_KEY=${API_KEY:-}
 HF_CACHE=${HF_CACHE:-$HOME/.cache/huggingface}
 VLLM_CACHE=${VLLM_CACHE:-$HOME/.cache/vllm}
-DOCKER=${DOCKER:-docker}
+DOCKER=${DOCKER:-docker}   # preflight may rewrite this to "sudo -n docker"
 
 # Pinned by digest: the kernel overrides below are written against this vLLM build's internals
 # (vllm 0.29.0). A different image can change those module paths and silently disable the overrides.
@@ -33,10 +33,112 @@ REV=${REV:-4d7ae4984b7db7de8f8457170b3f1a419ee76d52}
 DRAFT=${DRAFT:-google/gemma-4-26B-A4B-it-assistant}
 DRAFT_REV=${DRAFT_REV:-6e5aaaf4c42b98394530b8fda2e95cadd65c151c}
 
+usage() {
+  cat <<USAGE
+Serve Gemma-4-26B-A4B on one AMD MI300X.
+
+  ./serve.sh            preflight, then start; waits until /health answers
+  ./serve.sh check      preflight only — run this first on a new machine
+  ./serve.sh stop       stop and remove the container
+  ./serve.sh logs       follow the server log
+  ./serve.sh status     is it up, and what is it serving
+
+Environment overrides:
+  PORT=8000  HOST=127.0.0.1  API_KEY=  NAME=gemma4-vllm
+  HF_CACHE=~/.cache/huggingface   VLLM_CACHE=~/.cache/vllm
+
+HOST defaults to 127.0.0.1 deliberately. See "Accessing the server from another
+machine" in README.md before changing it — there is no auth unless API_KEY is set.
+USAGE
+}
+
+preflight() {
+  local fail=0
+  step(){ printf '  %-42s' "$1"; }
+  pass(){ echo "OK${1:+  ($1)}"; }
+  bad(){  echo "FAIL  $1"; fail=1; }
+
+  step "docker"
+  if ! command -v docker >/dev/null 2>&1; then
+    bad "docker not installed"
+  elif $DOCKER info >/dev/null 2>&1; then
+    pass "${DOCKER}"
+  elif sudo -n docker info >/dev/null 2>&1; then
+    # many hosts require root for the daemon socket; use it rather than failing
+    DOCKER="sudo -n docker"; pass "via sudo"
+  else
+    bad "cannot reach the docker daemon as $(id -un), and passwordless sudo is unavailable.
+      Either add yourself to the docker group (newgrp docker) or run: DOCKER='sudo docker' ./serve.sh"
+  fi
+
+  step "AMD GPU devices (/dev/kfd, /dev/dri)"
+  if [ -e /dev/kfd ] && [ -d /dev/dri ]; then pass
+  else bad "missing — this needs a ROCm host with an AMD Instinct GPU"; fi
+
+  step "GPU is MI300X (gfx942)"
+  local arch
+  arch=$(rocminfo 2>/dev/null | grep -m1 -oE 'gfx[0-9a-f]+' || echo "")
+  if [ "$arch" = "gfx942" ]; then pass "$arch"
+  elif [ -n "$arch" ]; then echo "WARN  found $arch, tuned for gfx942 — expect different numbers"
+  else echo "WARN  rocminfo not on PATH; skipping (the container has its own)"; fi
+
+  step "disk free for image + weights (~160 GB)"
+  local avail; avail=$(df -BG --output=avail "$HOME" 2>/dev/null | tail -1 | tr -dc '0-9')
+  if [ -n "$avail" ] && [ "$avail" -ge 160 ]; then pass "${avail}G"
+  elif [ -n "$avail" ]; then bad "only ${avail}G free under $HOME"
+  else echo "WARN  could not read"; fi
+
+  step "model in HF cache"
+  if [ -d "$HF_CACHE/hub/models--google--gemma-4-26B-A4B-it" ]; then pass
+  else
+    bad "not found under $HF_CACHE"
+    echo "      download both the model and its MTP drafter:"
+    echo "        pip install -U huggingface_hub"
+    echo "        hf download $MODEL --revision $REV"
+    echo "        hf download $DRAFT --revision $DRAFT_REV"
+  fi
+
+  step "MTP drafter in HF cache"
+  if [ -d "$HF_CACHE/hub/models--google--gemma-4-26B-A4B-it-assistant" ]; then pass
+  else bad "not found — speculative decoding needs it; see above"; fi
+
+  step "kernel override files present"
+  local missing=0 f
+  for f in triton_attn.py triton_unified_attention.py triton_attention_helpers.py \
+           vocab_parallel_embedding.py modular_kernel.py triton_moe.py \
+           fused_act_quant.py fused_moe.py; do
+    [ -f "$ROOT/kernels/$f" ] || { missing=$((missing+1)); }
+  done
+  [ "$missing" = 0 ] && pass "8 files" || bad "$missing missing from kernels/ — incomplete clone?"
+
+  step "port $PORT free"
+  if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":$PORT "; then
+    bad "something is already listening on $PORT (./serve.sh stop, or set PORT=)"
+  else pass; fi
+
+  return $fail
+}
+
 case "${1:-start}" in
-  stop) $DOCKER rm -f "$NAME" >/dev/null 2>&1 && echo "stopped $NAME"; exit 0 ;;
-  logs) exec $DOCKER logs -f "$NAME" ;;
+  -h|--help|help) usage; exit 0 ;;
+  check)  echo "=== preflight ==="; preflight && { echo; echo "ready — run ./serve.sh"; exit 0; } || { echo; echo "fix the FAIL lines above"; exit 1; } ;;
+  stop)   $DOCKER rm -f "$NAME" >/dev/null 2>&1 && echo "stopped $NAME" || echo "$NAME not running"; exit 0 ;;
+  logs)   exec $DOCKER logs -f "$NAME" ;;
+  status)
+    if [ -n "$($DOCKER ps -q -f name="^${NAME}$" 2>/dev/null)" ]; then
+      echo "container: up"
+      curl -fsS -m 5 "http://127.0.0.1:$PORT/v1/models" 2>/dev/null \
+        | python3 -c "import json,sys;[print('serving :',m['id'],'| max_model_len',m.get('max_model_len')) for m in json.load(sys.stdin).get('data',[])]" \
+        2>/dev/null || echo "serving : not answering yet"
+    else echo "container: down"; fi
+    exit 0 ;;
+  start) ;;
+  *) echo "unknown command: $1"; echo; usage; exit 1 ;;
 esac
+
+echo "=== preflight ==="
+preflight || { echo; echo "preflight failed — fix the above, or ./serve.sh check for detail"; exit 1; }
+echo
 
 if [ "$HOST" = "0.0.0.0" ] && [ -z "$API_KEY" ]; then
   echo "WARNING: binding 0.0.0.0 with no API_KEY — this endpoint is open to anyone who can reach"
