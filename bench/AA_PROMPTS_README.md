@@ -1,6 +1,6 @@
 # aa_prompts.jsonl — the exact prompt set behind the `aa_c1` number
 
-24 prompts, ~10,000 Gemma tokens each, one `{"prompt": ...}` per line. This is the set the
+40 prompts, ~10,000 Gemma tokens each, one `{"prompt": ...}` per line. This is the set the
 reference table's **371.7 tok/s** was measured with, shipped verbatim so the cell is reproducible
 rather than approximated.
 
@@ -14,7 +14,12 @@ same machine and config, varying only the prompts:
 | --- | ---: | ---: |
 | random tokens | 2.00 | 283.8 |
 | A Tale of Two Cities alone | 2.494 | 343.1 |
+| the AA-harness set (prose + a 1,500-word instruction) | 2.43 | 343.1 |
 | **this set** | **2.713** | **371.7** |
+
+Verified: run from a second machine over an SSH tunnel, this set gives **369.48 tok/s**, −0.6% from
+the reference. The three wrong corpora above all land near 343 — which is what made the cell look
+like a machine difference when it was a data-packaging one.
 
 A 31% spread in the headline number from the prompt text alone. That is why the cell ships its data.
 
@@ -27,7 +32,7 @@ budget and followed by an instruction asking for a ≥1,500-word literary analys
 
 ## A known flaw, stated rather than hidden
 
-**Three of the 24 prompts (indices 3, 6, 17) contain Project Gutenberg licence boilerplate**, which
+**Some prompts contain Project Gutenberg licence boilerplate**, which
 the original generator did not strip. Boilerplate is formulaic and a draft model predicts it easily,
 so those prompts inflate acceptance. **371.7 is therefore slightly optimistic** — about 12.5% of it
 was measured on text nobody would serve.
