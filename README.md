@@ -45,8 +45,17 @@ H100 = the same model and quantization on an H100 at matched `--max-model-len 13
 `--random-output-len 256`; at 32K a ~1.6 s prefill dominates, so running 1024 instead reports
 ~199 tok/s rather than ~109 — same per-token time, different amortisation. And `aa_c1` needs **real
 prose**: on random tokens the drafter's acceptance falls from ~2.71 to ~2.00 and the cell reports
-~25% low (measured 283.8 vs 371.7). `bench/run_bench.sh` encodes the reference definitions and skips
-`aa_c1` unless you supply `AA_PROMPTS` rather than print a misleading number.
+~25% low (measured 283.8 vs 371.7). `bench/run_bench.sh` encodes the reference definitions and
+builds `aa_c1`'s prompts for you on first use, from public-domain prose
+(`bench/make_aa_prompts.py`, Project Gutenberg). Offline or want your own corpus:
+
+```bash
+python3 bench/make_aa_prompts.py --src your_book.txt --out aa.jsonl
+AA_PROMPTS=aa.jsonl ./bench/run_bench.sh aa_c1
+```
+
+Absolute tok/s shifts a little with the passage; acceptance lands in the right regime, which is what
+the cell is measuring.
 
 All figures are a single verification run of the shipped configuration, taken after a discarded
 warm-up pass (see *Benchmarking notes* — the warm-up read 8614.6 on c128 against 8644.9 measured).
