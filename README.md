@@ -31,18 +31,19 @@ H100 = the same model and quantization on an H100 at matched `--max-model-len 13
 
 | cell | stock | H100 | **this stack** | ×stock | ×H100 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| sharegpt_c1 | 230.2 | 366.1 | **443.1** | 1.92× | 1.21× |
-| sharegpt_c32 | 1764.5 | 4418.5 | **4310.1** | 2.44× | 0.98× |
-| sharegpt_c128 | 3984.1 | 6972.1 | **8650** ᵃ | 2.17× | 1.24× |
-| sharegpt_c256 | 5325.1 | 9077.0 | **10490.8** | 1.97× | 1.16× |
-| aa_c1 (10K in / 1.5K out) | 163.5 | 355.9 | **372.2** | 2.28× | 1.05× |
-| long8k_c1 | 144.6 | 281.0 | **284.2** | 1.97× | 1.01× |
-| long32k_c1 | 65.0 | 160.0 | **111.3** | 1.71× | 0.70× |
+| sharegpt_c1 | 230.2 | 366.1 | **445.2** | 1.93× | 1.22× |
+| sharegpt_c32 | 1764.5 | 4418.5 | **4315.7** | 2.45× | 0.98× |
+| sharegpt_c128 | 3984.1 | 6972.1 | **8644.9** | 2.17× | 1.24× |
+| sharegpt_c256 | 5325.1 | 9077.0 | **10469.5** | 1.97× | 1.15× |
+| aa_c1 (10K in / 1.5K out) | 163.5 | 355.9 | **371.7** | 2.27× | 1.04× |
+| long8k_c1 | 144.6 | 281.0 | **277.2** | 1.92× | 0.99× |
+| long32k_c1 | 65.0 | 160.0 | **109.0** | 1.68× | 0.68× |
 
-32K time-to-first-token: **2160 → 1535 ms (−29%)**.
+32K time-to-first-token: **2160 → 1585 ms (−27%)**.
 
-ᵃ c128 median of runs free of the one-off Triton compile stall described under *Benchmarking notes*;
-individual runs ranged 8120–8699.
+All figures are a single verification run of the shipped configuration, taken after a discarded
+warm-up pass (see *Benchmarking notes* — the warm-up read 8614.6 on c128 against 8644.9 measured).
+Every ShareGPT cell sits inside its noise floor relative to the previous release.
 
 ### What this does NOT improve
 
