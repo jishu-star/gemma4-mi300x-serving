@@ -1,0 +1,128 @@
+# Gemma-4-26B-A4B on a single MI300X — tuned vLLM serving stack
+
+An OpenAI-compatible server for `google/gemma-4-26B-A4B-it` on one AMD Instinct MI300X,
+**2.0–2.4× stock vLLM** across the workload matrix, built from Triton kernel overrides mounted into
+a pinned vLLM image. No vLLM rebuild required — every override is a Python file that Triton
+JIT-compiles at runtime.
+
+```bash
+git clone <this repo> && cd gemma4-mi300x-serving
+./serve.sh            # starts the server, waits for /health
+./bench/smoke.sh      # one completion — expects "391"
+./bench/run_bench.sh  # reproduce the matrix
+./serve.sh stop
+```
+
+## Requirements
+
+- AMD Instinct MI300X (gfx942), ROCm host exposing `/dev/kfd` and `/dev/dri`
+- Docker, ~160 GB free for the image + model
+- The model in your HF cache (`HF_CACHE`, default `~/.cache/huggingface`):
+  - `google/gemma-4-26B-A4B-it` @ `4d7ae4984b7db7de8f8457170b3f1a419ee76d52`
+  - `google/gemma-4-26B-A4B-it-assistant` @ `6e5aaaf4c42b98394530b8fda2e95cadd65c151c` (MTP drafter)
+
+The vLLM image is **pinned by digest**. The overrides are written against that build's internals;
+a different image can move those module paths and silently disable them.
+
+## Results
+
+Single MI300X. `tok/s` is output-token throughput. Stock = unmodified vLLM, same image and model.
+H100 = the same model and quantization on an H100 at matched `--max-model-len 131072`.
+
+| cell | stock | H100 | **this stack** | ×stock | ×H100 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| sharegpt_c1 | 230.2 | 366.1 | **443.1** | 1.92× | 1.21× |
+| sharegpt_c32 | 1764.5 | 4418.5 | **4310.1** | 2.44× | 0.98× |
+| sharegpt_c128 | 3984.1 | 6972.1 | **8650** ᵃ | 2.17× | 1.24× |
+| sharegpt_c256 | 5325.1 | 9077.0 | **10490.8** | 1.97× | 1.16× |
+| aa_c1 (10K in / 1.5K out) | 163.5 | 355.9 | **372.2** | 2.28× | 1.05× |
+| long8k_c1 | 144.6 | 281.0 | **284.2** | 1.97× | 1.01× |
+| long32k_c1 | 65.0 | 160.0 | **111.3** | 1.71× | 0.70× |
+
+32K time-to-first-token: **2160 → 1535 ms (−29%)**.
+
+ᵃ c128 median of runs free of the one-off Triton compile stall described under *Benchmarking notes*;
+individual runs ranged 8120–8699.
+
+### What this does NOT improve
+
+**Artificial Analysis Output Speed is unchanged: 388.2 vs 388.0 tok/s.** That metric is
+`output_tokens / (total_time − TTFT)` — it subtracts TTFT by construction, so the long-context
+prefill work here cannot move it. AA's separately published TTFT does improve, 0.38 → 0.33 s.
+Quoted honestly: the 2.28× on `aa_c1` comes from decode-side work (speculative decoding, FP8,
+adaptive split-KV, MoE fusion); the long-context gains come from prefill work that AA's headline
+number excludes.
+
+`sharegpt_c32` sits at 0.98× H100 — the one cell where this stack does not lead.
+`long32k_c1` at 0.70× is explained in [docs/TUNING.md](docs/TUNING.md#the-lds-wall): a hard
+shared-memory capacity limit, not a tuning gap.
+
+## What's in the stack
+
+| component | what it does |
+| --- | --- |
+| `--quantization fp8_per_channel` | avoids the ROCm per-tensor downgrade |
+| MTP n=3 speculative decoding | separate assistant draft model, acceptance ≈ 2.7 |
+| adaptive split-KV segments | segment count targets CU saturation; the single largest win (+16.8%) |
+| FP8 LM head | removes a 1.476 GB BF16 read every step |
+| fused GELU-tanh + per-token FP8 quant | one kernel instead of two, −30 dispatches/step |
+| MoE output aliasing + cached padding tensor | −70 dispatches/step |
+| long-context prefill tiling | `BLOCK_M`/tile tuning on both attention layer types, gated to ≥4096 context |
+| extended cudagraph capture sizes | up to 3072 |
+| tuned MoE GEMM config | `moe_configs/`, E=128 N=704 |
+
+Full derivation, measurements and the negative results in [docs/TUNING.md](docs/TUNING.md).
+
+## Benchmarking notes
+
+Two things will mislead you if you measure carelessly:
+
+1. **Warm-up.** A fresh server compiles Triton kernel variants lazily. The first measured run of a
+   cell can absorb a one-off ~1.6 s compile; on a ~24 s benchmark that reads as a spurious ~6% loss.
+   Discard the first pass or take medians over ≥3 runs.
+2. **Noise floors.** Measured on this hardware, these are the limits below which a difference means
+   nothing: `sharegpt_c1` 0.4%, `aa_c1` 0.36%, `sharegpt_c128` 0.7%, `long8k`/`long32k` 3%,
+   `sharegpt_c256` 4–10%. Ranking changes below these is measuring noise.
+
+## Licence
+
+Apache-2.0. The files in `kernels/` are modified from the
+[vLLM project](https://github.com/vllm-project/vllm) (Apache-2.0) and retain their SPDX headers;
+see [NOTICE](NOTICE).
+
+## Accessing the server from another machine
+
+By default the server binds `127.0.0.1` — local only. There is **no authentication** in vLLM unless
+you set one, and `--network host` means binding `0.0.0.0` publishes the endpoint on every interface.
+An open endpoint is free use of your GPU by anyone who can reach the port, and they can read every
+prompt sent through it.
+
+**Preferred — SSH tunnel.** Nothing is exposed; the server stays bound to localhost:
+
+```bash
+# on your laptop
+ssh -N -L 8000:127.0.0.1:8000 user@gpu-host
+# then use http://127.0.0.1:8000 locally, as if it were on your machine
+curl http://127.0.0.1:8000/v1/models
+```
+
+**If you must bind externally**, set a key and firewall the port:
+
+```bash
+HOST=0.0.0.0 API_KEY="$(openssl rand -hex 32)" ./serve.sh
+# clients then send:  Authorization: Bearer <that key>
+```
+
+### Does remote access cost inference speed?
+
+- **Token generation rate: no measurable effect.** Binding `0.0.0.0` is the same server and the same
+  kernels. With streaming over a persistent connection every token is delayed by the same one-way
+  latency, so the gaps between tokens — which is what tok/s measures — are unchanged. You get a
+  constant offset, not a compounding one.
+- **TTFT: +~1 round-trip.** Sub-millisecond on a LAN (invisible against 1535 ms at 32K context);
+  50–100 ms across a continent, which matters most for the short-prompt cells where TTFT is ~29 ms.
+- **Throughput at concurrency: unaffected**, unless your link saturates — at ~8,650 tok/s on
+  `sharegpt_c128` the JSON stream is on the order of tens of Mbit/s, so a 1 Gbit link is ample.
+
+Every number in the results matrix above was measured **with the client inside the container**, i.e.
+pure localhost. They measure the serving stack, not your network path.

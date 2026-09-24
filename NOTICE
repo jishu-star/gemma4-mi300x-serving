@@ -1,0 +1,27 @@
+Gemma-4 MI300X serving stack
+Copyright 2026 the repository authors.
+
+Licensed under the Apache License, Version 2.0.
+
+This product includes software developed by the vLLM project
+(https://github.com/vllm-project/vllm), licensed under the Apache License 2.0.
+
+The following files are MODIFIED copies of vLLM sources and retain their original
+SPDX-License-Identifier and copyright headers:
+
+  kernels/triton_attn.py                  <- vllm/v1/attention/backends/triton_attn.py
+  kernels/triton_unified_attention.py     <- vllm/v1/attention/ops/triton_unified_attention.py
+  kernels/triton_attention_helpers.py     <- vllm/v1/attention/ops/triton_attention_helpers.py
+  kernels/vocab_parallel_embedding.py     <- vllm/model_executor/layers/vocab_parallel_embedding.py
+  kernels/modular_kernel.py               <- vllm/model_executor/layers/fused_moe/modular_kernel.py
+  kernels/triton_moe.py                   <- vllm/model_executor/layers/fused_moe/experts/triton_moe.py
+  kernels/fused_moe.py                    <- vllm/model_executor/layers/fused_moe/fused_moe.py
+
+  kernels/fused_act_quant.py              new file; follows the structure of vLLM's
+                                          silu_and_mul_per_block_quant fusion for an activation
+                                          and scale layout vLLM does not fuse.
+
+Modifications are gated behind NX_* environment variables; with none set, the files behave as
+upstream. Each modification carries an in-file comment stating what it changes and why.
+
+Benchmark harnesses under bench/ invoke `vllm bench serve` from the vLLM image.
