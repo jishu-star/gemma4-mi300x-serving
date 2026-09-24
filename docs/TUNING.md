@@ -64,8 +64,15 @@ leaving nothing for the S tile. The requirement is identical at 4 and 8 warps, b
 allocated per workgroup: this is not register pressure. No `TILE_SIZE` reduction recovers it.
 
 **H100 runs `tile_m = 64` at this head size because Hopper has 228 KB of shared memory per SM —
-3.6× more.** That capacity difference, not TMA or wgmma, is the residual 32K gap. `BLOCK_M = 32` is
-the hardware ceiling here and the stack sits on it.
+3.6× more.** `BLOCK_M = 32` is the ceiling *for this kernel structure*.
+
+> **Correction (measured, same day).** An earlier version of this section said the 32K gap was
+> "not closable from our side". That was an overreach. AMD's own AITER unified attention — also a
+> Triton kernel — hits the identical wall unpatched (`Required: 131072`, i.e. `2 × TILE(64) × 512 ×
+> 2`), but once its tile is reduced to fit it reaches a **31% better 32K TTFT than our fully tuned
+> kernel** (1465 vs 1585 ms) and **+71% throughput over stock Triton** on `long32k`, untuned.
+> The 64 KB LDS limit is real and all three ROCm backends hit it; what it bounds is a particular
+> tiling, not the problem. The 0.68× H100 figure is this kernel's ceiling, not the hardware's.
 
 The 25 **sliding** layers are head_dim 256, so their Q tile is half as wide and `BLOCK_M = 128`
 fits (`128 × 256 × 2 = 65,536`). Measured per dispatch at 32K: 6.889 → 2.954 ms (**−57.1%**).
@@ -99,7 +106,9 @@ are resolved once at import, never in the per-layer path.
 | sliding `BLOCK_M = 64` as a middle point | same acceptance loss as 128 with less gain; strictly dominated |
 | fp8 KV cache to relieve LDS | ROCm leaves Q in bf16 (`supports_quant_query_input = is_cuda()`), so the Q tile does not shrink; measured *slower* |
 | MoE tuned-config file for M=4 | the file path uses nearest-key lookup, the default path uses exact M — no file can express "defaults except M=4"; mounting any file costs 5–7% |
-| AITER assembly MoE | cannot serve this model in any precision |
+| AITER assembly MoE | cannot serve this model in any precision — no `Gelu_tanh` in `ActivationType` |
+| `ROCM_ATTN`, `ROCM_AITER_FA` backends | reject `head_size` 512 outright (supported list caps at 256) |
+| `ROCM_AITER_UNIFIED_ATTN` unpatched | loads, then `OutOfResources: Required 131072` — its gfx942 tile is 2× what fits at head 512 |
 
 ## Measurement discipline
 
