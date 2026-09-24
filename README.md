@@ -74,6 +74,26 @@ shared-memory capacity limit, not a tuning gap.
 
 Full derivation, measurements and the negative results in [docs/TUNING.md](docs/TUNING.md).
 
+## If your numbers are lower than the table
+
+Run `./bench/diagnose.sh` with the server up. It checks, in order of how much each can cost you:
+
+1. **GPU SKU and power cap** — the table is one MI300X (gfx942, 304 CU). A different SKU or a lower
+   cap changes everything.
+2. **Whether the kernel overrides are actually live** — it md5s each file inside the container
+   against the repo copy. A silently failed mount is the easiest way to lose double digits, and the
+   server starts perfectly happily without them.
+3. **Acceptance length** — reference ~2.71. Single-stream throughput scales close to linearly with
+   it, so a drafter that failed to load (1.0) or is accepting 2.1 is −23% on its own. This is the
+   first thing to check for a large single-stream gap.
+4. **Host dispatch** — a decode step issues **920 kernel launches**; at the measured 2.31 µs floor
+   that is ~2.1 ms of pure launch cost per step at concurrency 1. A low core count or a `powersave`
+   governor is charged straight against throughput.
+5. **CUDA graphs and MoE backend** — graphs captured, `TRITON Fp8 MoE`, `enforce_eager` unset.
+
+A one-off Triton compile explains ~6% on a short benchmark, no more. A larger gap is one of the
+above, not warm-up.
+
 ## Benchmarking notes
 
 Two things will mislead you if you measure carelessly:
