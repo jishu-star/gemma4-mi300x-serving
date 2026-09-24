@@ -35,12 +35,34 @@ sharegpt() { [ -f "$SG" ] || { echo "  (skipped: ShareGPT dataset not at $SG)"; 
   run "$1" chat "$2" "$3" --dataset-name sharegpt --dataset-path /tmp/sharegpt.json --ignore-eos; }
 synth() { run "$1" chat "$2" "$3" --dataset-name random --random-input-len "$4" --random-output-len "$5" --ignore-eos; }
 
+# aa_c1 needs REAL PROSE, not random tokens. The draft model cannot predict random tokens, so
+# acceptance collapses to ~2.0 against ~2.7 on real text, and since single-stream throughput scales
+# close to linearly with acceptance the cell under-reports by ~25%. Measured: 283.8 tok/s on random
+# tokens vs 371.7 on prose, with acceptance 2.00 vs 2.71 -- the whole gap.
+# Supply a JSONL of ~10K-token prose passages via AA_PROMPTS; the reference set is real book prose
+# and is not redistributable here.
+aa_cell() {
+  if [ -z "${AA_PROMPTS:-}" ] || [ ! -f "${AA_PROMPTS:-}" ]; then
+    echo "=== aa_c1 SKIPPED"
+    echo "    Needs real ~10K-token prose prompts. Set AA_PROMPTS=/path/to/prompts.jsonl"
+    echo "    (one {\"prompt\": \"...\"} per line). Random tokens would report ~25% low because"
+    echo "    draft acceptance collapses from ~2.7 to ~2.0 on unpredictable input."
+    return
+  fi
+  $DOCKER cp "$AA_PROMPTS" "$NAME:/tmp/aa.jsonl" >/dev/null 2>&1
+  run aa_c1 longin 1 10 --dataset-name custom --dataset-path /tmp/aa.jsonl \
+      --custom-output-len 1500 --ignore-eos
+}
+
 CELL=${1:-all}
 [ "$CELL" = all ] || [ "$CELL" = sharegpt_c1 ]   && sharegpt sharegpt_c1   1   100
 [ "$CELL" = all ] || [ "$CELL" = sharegpt_c32 ]  && sharegpt sharegpt_c32  32  500
 [ "$CELL" = all ] || [ "$CELL" = sharegpt_c128 ] && sharegpt sharegpt_c128 128 1000
 [ "$CELL" = all ] || [ "$CELL" = sharegpt_c256 ] && sharegpt sharegpt_c256 256 1000
-[ "$CELL" = all ] || [ "$CELL" = aa_c1 ]         && synth    aa_c1         1   10   9921 1500
-[ "$CELL" = all ] || [ "$CELL" = long8k_c1 ]     && synth    long8k_c1     1   20   8192 1024
-[ "$CELL" = all ] || [ "$CELL" = long32k_c1 ]    && synth    long32k_c1    1   10  32768 1024
+[ "$CELL" = all ] || [ "$CELL" = aa_c1 ]         && aa_cell
+# output-len 256, NOT 1024. At 32K the ~1.6 s prefill dominates, so output length sets the number:
+# 256 -> ~109 tok/s, 1024 -> ~199 tok/s, with identical per-token time. Both are "correct"; only
+# 256 matches the reference table.
+[ "$CELL" = all ] || [ "$CELL" = long8k_c1 ]     && synth    long8k_c1     1   20   8192  256
+[ "$CELL" = all ] || [ "$CELL" = long32k_c1 ]    && synth    long32k_c1    1   10  32768  256
 echo "=== results in $OUT"
