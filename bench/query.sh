@@ -20,7 +20,7 @@ PROMPT=${*:-"What is 17 times 23? Answer with just the number."}
 URL="http://$HOST:$PORT/v1/chat/completions"
 AUTH=(); [ -n "${API_KEY:-}" ] && AUTH=(-H "Authorization: Bearer $API_KEY")
 
-if ! curl -fsS -m 10 "${AUTH[@]}" "http://$HOST:$PORT/v1/models" >/dev/null 2>&1; then
+if ! curl -fsS -m 10 ${AUTH[@]+"${AUTH[@]}"} "http://$HOST:$PORT/v1/models" >/dev/null 2>&1; then
   echo "cannot reach http://$HOST:$PORT" >&2
   echo "  - server bound to 127.0.0.1? open a tunnel: ssh -N -L $PORT:127.0.0.1:$PORT user@gpu-host" >&2
   echo "  - bound to 0.0.0.0 but started with API_KEY? pass API_KEY=... to this script" >&2
@@ -35,7 +35,7 @@ print(json.dumps({"model":sys.argv[1],"messages":[{"role":"user","content":sys.a
  "$MODEL" "$PROMPT" "$MAX_TOKENS" "$TEMPERATURE" "$STREAM")
 
 if [ "$STREAM" = 1 ]; then
-  curl -sS -N -m 600 "$URL" "${AUTH[@]}" -H 'Content-Type: application/json' -d "$BODY" \
+  curl -sS -N -m 600 "$URL" ${AUTH[@]+"${AUTH[@]}"} -H 'Content-Type: application/json' -d "$BODY" \
   | python3 -u -c '
 import json,sys
 for line in sys.stdin:
@@ -47,7 +47,7 @@ for line in sys.stdin:
     t=(d.get("choices") or [{}])[0].get("delta",{}).get("content")
     if t: sys.stdout.write(t)'
 else
-  curl -sS -m 600 "$URL" "${AUTH[@]}" -H 'Content-Type: application/json' -d "$BODY" \
+  curl -sS -m 600 "$URL" ${AUTH[@]+"${AUTH[@]}"} -H 'Content-Type: application/json' -d "$BODY" \
   | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
