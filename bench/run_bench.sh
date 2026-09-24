@@ -62,19 +62,20 @@ synth() { run "$1" chat "$2" "$3" --dataset-name random --random-input-len "$4" 
 # and is not redistributable here.
 aa_cell() {
   local remote=/tmp/aa.jsonl
+  local local_set="$(dirname "$0")/aa_prompts.jsonl"
+  # Default to the EXACT prompt set the reference table was measured with. aa_c1 is acutely
+  # sensitive to the corpus: draft acceptance (and therefore throughput) depends on how predictable
+  # the prose is. Random tokens give 2.00, Dickens alone 2.494, this set 2.713 -- a 31% spread in
+  # the headline number from the prompts alone.
   if [ -n "${AA_PROMPTS:-}" ] && [ -f "${AA_PROMPTS:-}" ]; then
     $DOCKER cp "$AA_PROMPTS" "$NAME:$remote" >/dev/null 2>&1
-  elif ! $DOCKER exec "$NAME" test -s "$remote" 2>/dev/null; then
-    echo "  building aa_c1 prompts from public-domain prose (once)"
+  elif [ -f "$local_set" ]; then
+    $DOCKER cp "$local_set" "$NAME:$remote" >/dev/null 2>&1
+  else
+    echo "  building prompts from public-domain prose (aa_prompts.jsonl missing)"
     $DOCKER cp "$(dirname "$0")/make_aa_prompts.py" "$NAME:/tmp/mk.py" >/dev/null 2>&1
-    if ! $DOCKER exec "$NAME" bash -lc "HF_HUB_OFFLINE=0 python3 /tmp/mk.py --out $remote -n 24" 2>&1 | sed 's/^/    /'; then
-      echo "=== aa_c1 SKIPPED — could not build prompts"
-      echo "    No network for the public-domain download? Supply your own:"
-      echo "      AA_PROMPTS=/path/to/prompts.jsonl ./bench/run_bench.sh aa_c1"
-      echo "    (one {\"prompt\": \"...\"} per line, ~10K tokens of real prose each)"
-      echo "    Random tokens would report ~25% low: draft acceptance collapses 2.71 -> 2.00."
-      return
-    fi
+    $DOCKER exec "$NAME" bash -lc "HF_HUB_OFFLINE=0 python3 /tmp/mk.py --out $remote -n 24" 2>&1 | sed 's/^/    /' || {
+      echo "=== aa_c1 SKIPPED — no prompt set and could not build one"; return; }
   fi
   run aa_c1 longin 1 10 --dataset-name custom --dataset-path "$remote" \
       --custom-output-len 1500 --ignore-eos

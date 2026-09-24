@@ -6,9 +6,15 @@ language and cannot predict random tokens, so acceptance falls from ~2.71 to ~2.
 under-reports by about 25% (measured: 283.8 tok/s on random tokens vs 371.7 on prose). The shape is
 the same; the number is not.
 
-SOURCE. Public-domain text. The reference set used Dickens, "A Tale of Two Cities" (Project
-Gutenberg #98). Any sufficiently long prose works -- absolute tok/s will differ slightly with the
-passage, but acceptance lands in the right regime, which is the point.
+SOURCE. The reference set is a MIX of three public-domain books, not one:
+    Moby-Dick (#2701)  x10    A Tale of Two Cities (#98)  x4    Frankenstein (#84)  x4
+plus 3 prompts that unintentionally contained Project Gutenberg LICENCE BOILERPLATE and 3
+unidentified. The mix matters: a single book gives different draft acceptance, and acceptance sets
+the number. Measured on Dickens alone: 2.494 and 343.1 tok/s; the reference mix: 2.713 and 371.7.
+
+CAVEAT ON THE REFERENCE. Those 3 boilerplate prompts (12.5% of the set) are formulaic and highly
+predictable, so they inflate acceptance. This generator STRIPS the boilerplate, which is correct but
+means a clean run may land slightly below 371.7 through no fault of the machine.
 
 USAGE (inside the serving container, which already has the tokenizer):
     python3 make_aa_prompts.py --out /tmp/aa.jsonl                 # downloads #98
@@ -18,7 +24,10 @@ Output is one {"prompt": ...} per line, the format `vllm bench serve --dataset-n
 """
 import argparse, json, sys
 
-GUTENBERG = "https://www.gutenberg.org/files/98/98-0.txt"
+# (gutenberg id, weight) — weights reproduce the reference mix
+SOURCES = [(2701, 10), (98, 4), (84, 4)]
+URLS = ["https://www.gutenberg.org/cache/epub/{i}/pg{i}.txt",
+        "https://www.gutenberg.org/files/{i}/{i}-0.txt"]
 
 INSTRUCTION = (
     "\n\n---\n\n"
@@ -44,40 +53,61 @@ def main():
     ap.add_argument("--target-in", type=int, default=10000, help="input tokens per prompt")
     a = ap.parse_args()
 
+    def strip_boilerplate(t):
+        """Remove the Gutenberg header/footer. The reference set skipped this and 3 of its 24
+        prompts carried licence text, which a draft model predicts very easily."""
+        i = t.find("*** START OF TH")
+        if i != -1:
+            t = t[t.find("\n", i) + 1:]
+        j = t.find("*** END OF TH")
+        if j != -1:
+            t = t[:j]
+        return t
+
     if a.src:
-        text = open(a.src, encoding="utf-8", errors="ignore").read()
+        texts = [(strip_boilerplate(open(a.src, encoding="utf-8", errors="ignore").read()), 1)]
     else:
         import urllib.request
-        print(f"downloading {GUTENBERG}", file=sys.stderr)
-        text = urllib.request.urlopen(GUTENBERG, timeout=60).read().decode("utf-8", "ignore")
-
-    # Strip Gutenberg boilerplate so the prompt is prose, not a licence header.
-    for mark in ("*** START OF TH", "*** START OF THE PROJECT"):
-        i = text.find(mark)
-        if i != -1:
-            text = text[text.find("\n", i) + 1:]
-            break
-    j = text.find("*** END OF TH")
-    if j != -1:
-        text = text[:j]
+        texts = []
+        for gid, w in SOURCES:
+            raw = None
+            for u in URLS:
+                try:
+                    print(f"downloading gutenberg #{gid}", file=sys.stderr)
+                    raw = urllib.request.urlopen(u.format(i=gid), timeout=60).read().decode("utf-8", "ignore")
+                    break
+                except Exception as e:
+                    print(f"  {type(e).__name__}: {e}", file=sys.stderr)
+            if raw:
+                texts.append((strip_boilerplate(raw), w))
+        if not texts:
+            sys.exit("could not download any source; use --src with a local text file")
 
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(a.model, revision=a.revision)
     instr_n = len(tok(INSTRUCTION).input_ids)
     budget = a.target_in - instr_n
 
-    ids = tok(text).input_ids
-    if len(ids) < budget * a.n:
-        print(f"WARNING: source has {len(ids)} tokens, need ~{budget*a.n}; passages will overlap",
-              file=sys.stderr)
+    # allocate prompts across sources in the reference proportions
+    total_w = sum(w for _, w in texts)
+    quota = [max(1, round(a.n * w / total_w)) for _, w in texts]
+    while sum(quota) > a.n:
+        quota[quota.index(max(quota))] -= 1
+    while sum(quota) < a.n:
+        quota[quota.index(max(quota))] += 1
 
     rows, lens = [], []
-    for k in range(a.n):
-        start = (k * budget) % max(1, len(ids) - budget)
-        body = tok.decode(ids[start:start + budget], skip_special_tokens=True)
-        p = body + INSTRUCTION
-        rows.append({"prompt": p})
-        lens.append(len(tok(p).input_ids))
+    for (text, _), want in zip(texts, quota):
+        ids = tok(text).input_ids
+        if len(ids) < budget * want:
+            print(f"WARNING: a source has {len(ids)} tokens, need ~{budget*want}; passages overlap",
+                  file=sys.stderr)
+        for k in range(want):
+            start = (k * budget) % max(1, len(ids) - budget)
+            body = tok.decode(ids[start:start + budget], skip_special_tokens=True)
+            p = body + INSTRUCTION
+            rows.append({"prompt": p})
+            lens.append(len(tok(p).input_ids))
 
     with open(a.out, "w", encoding="utf-8") as f:
         for r in rows:
